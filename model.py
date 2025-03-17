@@ -48,7 +48,9 @@ class MyModel(nn.Module):
         x = x.to(self.backbone.device)
         mask = mask.to(self.backbone.device)
         out = self.backbone(x, attention_mask = mask, output_attentions=False)
-        return out, self.classifier(out.last_hidden_state)
+        classifier_output = self.classifier(out.last_hidden_state)
+        
+        return out, classifier_output
 
     def phenos(self, x, mask):
         """
@@ -80,6 +82,8 @@ class MyModel(nn.Module):
         Returns:
         torch.Tensor: The generated output tensor.
         """
+        x = x.to(self.backbone.device)
+        mask = mask.to(self.backbone.device)
         outs = []
         if self.args.task == 'seq' or choice == 'seq':
             for i, offset in enumerate(range(0, x.shape[1], self.args.max_len-1)):
@@ -106,7 +110,6 @@ class MyModel(nn.Module):
             h = torch.cat(outs, 1)  # [batch_size, total_sequence_length, hidden_dim]
             h = h.view(-1, h.shape[-1])  # [batch_size * total_sequence_length, hidden_dim]
             return self.classifier(h)
-
 
 def load_model(args, device):
     """

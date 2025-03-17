@@ -15,6 +15,7 @@ def get_args():
     parser.add_argument('--max_len', type=int, default=512)
     parser.add_argument('--model', default='roberta-base',)
     parser.add_argument('--model_name', default='google/electra-base-discriminator',)
+    parser.add_argument("--stacked", nargs='+', type=str, help="List of model names separated by space")
     parser.add_argument('--gpu', default='0')
     parser.add_argument('--grad_accumulation', default=2, type=int)
     parser.add_argument('--pheno_id', type=int)

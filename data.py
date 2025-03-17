@@ -9,7 +9,6 @@ from glob import glob
 from collections.abc import Iterable
 from collections import defaultdict
 
-
 pheno_map = {'alcohol.abuse': 0,
         'advanced.lung.disease': 1,
         'advanced.heart.disease': 2,
@@ -46,12 +45,6 @@ def gen_splits(args, phenos):
     Raises:
     ValueError: If phenos is None and args.task is not 'token'.
     """
-    #if args.unseen_pheno is None:
-    #    splits_dir = os.path.join(args.data_dir, 'splits')
-    #    train_files = open(os.path.join(splits_dir, 'train.txt')).read().splitlines()
-    #    val_files = open(os.path.join(splits_dir, 'val.txt')).read().splitlines()
-    #    test_files = open(os.path.join(splits_dir, 'test.txt')).read().splitlines()
-    #    return train_files, val_files, test_files
 
     np.random.seed(0)
     if args.task == 'token':
@@ -67,7 +60,6 @@ def gen_splits(args, phenos):
     phenos['phenotype_label'] = phenos['phenotype_label'].apply(lambda x: x.lower())
 
     n = len(subjects)
-    print('Number of subjects:', n)
     train_count = int(0.8*n)
     val_count = max(0, int(0.9*n) - train_count)
     test_count = n - train_count - val_count
@@ -156,8 +148,6 @@ class MyDataset(Dataset):
         self.train = train
         self.pheno_ids = defaultdict(list)
         self.dec_ids = {k: [] for k in pheno_map.keys()}
-        #self.meddec_stats = pd.read_csv(os.path.join(args.data_dir, 'stats.csv')).set_index(['SUBJECT_ID', 'HADM_ID', 'ROW_ID'])
-        #elf.stats = defaultdict(list)
 
         if args.task == 'seq': # phenotype prediction
             for i, row in data_source.iterrows():
@@ -186,13 +176,16 @@ class MyDataset(Dataset):
                 - labels: A numpy array of phenotype labels.
                 - ids: Currently set to None.
         """
-        print('\nMyDataset.load_phenos() debugging:')
         txt_path = os.path.join(args.data_dir, f'raw_text/{row["subject_id"]}_{row["hadm_id"]}_{row["row_id"]}.txt')
         text = open(txt_path).read()
-        encoding = self.tokenizer.encode_plus(text,
-                truncation=args.truncate_train if self.train else args.truncate_eval)
+        encoding = self.tokenizer.encode_plus(
+                text,
+                max_length=args.max_len,  # Ensure we use a fixed max_length
+                #truncation=args.truncate_train if self.train else args.truncate_eval,
+                truncation=True,
+                padding='max_length',  # Always pad to max_length
+                )
         ids = None
-
         labels = np.zeros(args.num_phenos)
 
         sample_phenos = row['phenotype_label']
@@ -209,23 +202,7 @@ class MyDataset(Dataset):
         return encoding['input_ids'], labels, ids
 
     def load_decisions(self, args, fn, idx, phenos):
-        """
-        Load decision annotations and encode text data for a given file.
-        Args:
-            args (Namespace): Arguments containing configuration parameters.
-            fn (str): Filename of the data file to load.
-            idx (int): Index of the current sample.
-            phenos (DataFrame): DataFrame containing phenotype labels.
-        Returns:
-            dict: A dictionary containing encoded input IDs, labels, token-to-character mapping, 
-                  and additional information if not in training mode.
-        Raises:
-            ValueError: If encoding start or end positions are None.
-        Notes:
-            - The function reads the text data from a file, encodes it using a tokenizer, and processes annotations.
-            - It supports different label encoding schemes: 'multiclass', 'bo', 'boe', and default.
-            - If not in training mode, additional information such as spans, file name, and token mask is included in the results.
-        """
+        """Load decision annotations and encode text data for a given file."""
         basename = os.path.splitext(os.path.basename(fn))[0]
         file_dir = os.path.join(args.data_dir, fn)
 
@@ -234,14 +211,15 @@ class MyDataset(Dataset):
         text = open(txt_path).read()
         encoding = self.tokenizer.encode_plus(text,
                 max_length=args.max_len,
-                truncation=args.truncate_train if self.train else args.truncate_eval,
+                #truncation=args.truncate_train if self.train else args.truncate_eval,
+                truncation=True,
                 padding = 'max_length',
                 )
+
         if (sid, hadm, rid) in phenos.index:
             sample_phenos = phenos.loc[sid, hadm, rid]['phenotype_label']
             for pheno in sample_phenos.split(','):
                 self.pheno_ids[pheno].append(idx)
-
 
         with open(file_dir) as f:
             data = json.load(f, strict=False)
@@ -312,11 +290,6 @@ class MyDataset(Dataset):
             else:
                 labels[enc_start:enc_end, cat] = 1
 
-        #row = self.meddec_stats.loc[sid, hadm, rid]
-        #self.stats['gender'].append(row.GENDER)
-        #self.stats['ethnicity'].append(row.ETHNICITY)
-        #self.stats['language'].append(row.LANGUAGE)
-
         results = {
                 'input_ids': encoding['input_ids'],
                 'labels': labels,
@@ -352,26 +325,12 @@ def parse_cat(cat):
             return int(c)
     return None
 
-
 def load_phenos(args):
-    """
-    Load and preprocess phenotype data from a CSV file.
-
-    Args:
-        args: An object containing the attribute 'data_dir', which specifies the directory path where the 'phenos.csv' file is located.
-
-    Returns:
-        pandas.DataFrame: A DataFrame containing the preprocessed phenotype data with the following modifications:
-            - The column 'Ham_ID' is renamed to 'HADM_ID'.
-            - Rows with 'phenotype_label' equal to '?' are removed.
-            - All column names are converted to lowercase.
-    """
-    print('\nload_phenos debugging:')
+    """Load and preprocess phenotype data from a CSV file."""
     phenos = pd.read_csv(os.path.join(args.data_dir, 'phenos.csv'))
     phenos.rename({'Ham_ID': 'HADM_ID'}, inplace=True, axis=1)
     phenos = phenos[phenos.phenotype_label != '?']
     phenos.rename(lambda k: k.lower(), inplace=True, axis = 1)
-    print(phenos.head(2))
     return phenos
 
 def downsample(dataset):
@@ -426,28 +385,7 @@ def load_tokenizer(name):
     return AutoTokenizer.from_pretrained(name)
 
 def load_data(args):
-    """
-    Load and preprocess data for training, validation, and testing.
-
-    Args:
-        args (Namespace): A namespace object containing various arguments and configurations.
-
-    Returns:
-        tuple: A tuple containing the following elements:
-            - train_dataloader (DataLoader): DataLoader for the training dataset with segmented collation.
-            - val_dataloader (DataLoader): DataLoader for the validation dataset with full collation.
-            - test_dataloader (DataLoader): DataLoader for the test dataset with full collation.
-            - train_ns (DataLoader): DataLoader for the training dataset with full collation and batch size of 1.
-
-    The function performs the following steps:
-        1. Defines two collation functions: `collate_segment` and `collate_full`.
-        2. Loads the tokenizer and sets vocabulary size and maximum length.
-        3. Loads phenotype data and generates train, validation, and test splits.
-        4. Creates datasets for training, validation, and testing.
-        5. Optionally resamples the training dataset based on the `args.resample` parameter.
-        6. Prints the sizes of the train, validation, and test datasets.
-        7. Creates DataLoaders for the train, validation, and test datasets with appropriate collation functions.
-    """
+    """Load and preprocess data for training, validation, and testing."""
     from sklearn.utils import resample
     def collate_segment(batch):
         """
@@ -518,23 +456,10 @@ def load_data(args):
         return {'input_ids': xs, 'labels': ys, 'ids': ids, 'mask': masks, 't2c': t2cs}
 
     def collate_full(batch):
-        """
-        Collates a batch of data samples into a single batch suitable for model input.
-
-        Args:
-            batch (list of dict): A list of dictionaries where each dictionary represents a single data sample.
-                Each dictionary should contain the keys 'input_ids', 'labels', and optionally 'all_spans' and 'file_name'.
-
-        Returns:
-            dict: A dictionary containing the collated batch data. The keys are:
-                - 'input_ids': A tensor of padded input IDs.
-                - 'labels': A tensor of padded labels.
-                - 'mask': A tensor indicating the valid positions in the input IDs.
-                - 'all_spans' (optional): A list of all spans from the batch.
-                - 'file_name' (optional): A list of file names from the batch.
-        """
+        """Collates a batch of data samples into a single batch suitable for model input."""
         lens = [len(x['input_ids']) for x in batch]
-        max_len = max(args.max_len, max(lens))
+        max_len = min(max(lens), 2048)  # Avoid unbounded padding, we need fixed size for ensemble
+
         for i in range(len(batch)):
             batch[i]['input_ids'] = np.pad(batch[i]['input_ids'], (0, max_len - lens[i]))
             if args.task == 'token':
@@ -542,8 +467,7 @@ def load_data(args):
                     batch[i]['labels'] = np.pad(batch[i]['labels'], (0, max_len - lens[i]), constant_values=-100)
                 else:
                     batch[i]['labels'] = np.pad(batch[i]['labels'], ((0, max_len - lens[i]), (0, 0)))
-            mask = [1] * lens[i] + [0] * (max_len - lens[i])
-            batch[i]['mask'] = mask
+            batch[i]['mask'] = [1] * lens[i] + [0] * (max_len - lens[i])
 
         new_batch = {}
         for k in batch[0].keys():
@@ -554,34 +478,71 @@ def load_data(args):
                 new_batch[k] = torch.tensor(np.array(collated))
             else:
                 new_batch[k] = collated
+
         return new_batch
 
-    tokenizer = load_tokenizer(args.model_name)
-    args.vocab_size = tokenizer.vocab_size
-    args.max_length = min(tokenizer.model_max_length, 512)
 
-    phenos = load_phenos(args)
-    train_files, val_files, test_files = gen_splits(args, phenos)
-    phenos.set_index(['subject_id', 'hadm_id', 'row_id'], inplace=True)
+    train_dataloaders, val_dataloaders, test_dataloaders, train_nss = [], [], [], []
 
-    train_dataset = MyDataset(args, tokenizer, train_files, phenos, train=True)
-    val_dataset = MyDataset(args, tokenizer, val_files, phenos)
-    test_dataset = MyDataset(args, tokenizer, test_files, phenos)
+    if args.stacked != None:
+        for m in args.stacked:
+            tokenizer = load_tokenizer(m)
+            args.vocab_size = tokenizer.vocab_size
+            args.max_len = min(tokenizer.model_max_length, 512)
 
-    if args.resample == 'down':
-        downsample(train_dataset)
-    elif args.resample == 'up':
-        upsample(train_dataset)
+            phenos = load_phenos(args)
+            train_files, val_files, test_files = gen_splits(args, phenos)
+            phenos.set_index(['subject_id', 'hadm_id', 'row_id'], inplace=True)
 
-    print('Lenght Test dataset:', len(test_dataset))
+            train_dataset = MyDataset(args, tokenizer, train_files, phenos, train=True)
+            val_dataset = MyDataset(args, tokenizer, val_files, phenos)
+            test_dataset = MyDataset(args, tokenizer, test_files, phenos)
 
-    train_ns = DataLoader(train_dataset, 1, False,
-            collate_fn=collate_full,
-            )
-    train_dataloader = DataLoader(train_dataset, args.batch_size, True,
-            collate_fn=collate_segment,
-            )
-    val_dataloader = DataLoader(val_dataset, 1, False, collate_fn=collate_full)
-    test_dataloader = DataLoader(test_dataset, 1, False, collate_fn=collate_full)
+            if args.resample == 'down':
+                downsample(train_dataset)
+            elif args.resample == 'up':
+                upsample(train_dataset)
 
-    return train_dataloader, val_dataloader, test_dataloader, train_ns
+            train_ns = DataLoader(train_dataset, 1, False, collate_fn=collate_full)
+            train_dataloader = DataLoader(train_dataset, args.batch_size, True, collate_fn=collate_segment)
+            val_dataloader = DataLoader(val_dataset, 1, False, collate_fn=collate_full)
+            test_dataloader = DataLoader(test_dataset, 1, False, collate_fn=collate_full)
+
+            train_dataloaders.append(train_dataloader)
+            val_dataloaders.append(val_dataloader)
+            test_dataloaders.append(test_dataloader)
+            train_nss.append(train_ns)
+    else:
+        tokenizer = load_tokenizer(args.model_name)
+        args.vocab_size = tokenizer.vocab_size
+        args.max_len = min(tokenizer.model_max_length, 512)
+
+        phenos = load_phenos(args)
+        train_files, val_files, test_files = gen_splits(args, phenos)
+        phenos.set_index(['subject_id', 'hadm_id', 'row_id'], inplace=True)
+
+        train_dataset = MyDataset(args, tokenizer, train_files, phenos, train=True)
+        val_dataset = MyDataset(args, tokenizer, val_files, phenos)
+        test_dataset = MyDataset(args, tokenizer, test_files, phenos)
+
+        if args.resample == 'down':
+            downsample(train_dataset)
+        elif args.resample == 'up':
+            upsample(train_dataset)
+
+        train_ns = DataLoader(train_dataset, 1, False,
+                collate_fn=collate_full,
+                )
+        train_dataloader = DataLoader(train_dataset, args.batch_size, True,
+                collate_fn=collate_segment,
+                )
+        val_dataloader = DataLoader(val_dataset, 1, False, collate_fn=collate_full)
+        test_dataloader = DataLoader(test_dataset, 1, False, collate_fn=collate_full)
+
+        train_dataloaders.append(train_dataloader)
+        val_dataloaders.append(val_dataloader)
+        test_dataloaders.append(test_dataloader)
+        train_nss.append(train_ns)
+
+    
+    return train_dataloaders, val_dataloaders, test_dataloaders, train_nss

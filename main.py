@@ -17,7 +17,7 @@ mean = lambda l: sum(l)/len(l) if len(l) > 0 else .0
 args = get_args()
 
 # device = 'cuda:%s'%args.gpu
-device = 'cuda' if torch.cuda.is_available() else 'mps'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 all_losses = {'train': [], 'val': [], 'test': []}
 
 
@@ -103,7 +103,6 @@ def indicators_to_spans(labels, idx = None) -> set:
                     elif labels[t,c] == 1:
                         start = t
     return spans
-
 
 def id_to_label(labels) -> list:
     """
@@ -192,146 +191,127 @@ def save_losses(model, crit, train_dataloader, val_dataloader, test_dataloader):
     test_losses = evaluate(model, test_dataloader, crit, return_losses = True)
     all_losses['test'].append(test_losses)
 
-def evaluate(model, dataloader, crit, return_losses = False, return_preds = False):
-    """
-    Evaluates the given model on the provided dataloader using the specified criterion.
-
-    Args:
-        model (torch.nn.Module): The model to evaluate.
-        dataloader (torch.utils.data.DataLoader): The dataloader providing the evaluation data.
-        crit (torch.nn.Module): The criterion (loss function) used for evaluation.
-        return_losses (bool, optional): If True, returns the individual losses for each batch. Defaults to False.
-        return_preds (bool, optional): If True, returns the predictions and corresponding spans. Defaults to False.
-
-    Returns:
-        tuple: A tuple containing:
-            - metrics_out (dict): A dictionary containing evaluation metrics such as 'f1' and 'acc'.
-            - pheno_results (dict or None): A dictionary containing phenotype-specific F1 scores if applicable, 
-                otherwise None.
-            - loss (torch.Tensor): The mean loss over the evaluation dataset.
-            - perclass (dict): A dictionary containing per-class evaluation metrics.
-            - (optional) losses (list): A list of individual losses for each batch if return_losses is True.
-            - (optional) span_preds (list): A list of predicted spans if return_preds is True.
-            - (optional) span_ys (list): A list of ground truth spans if return_preds is True.
-    """
-    model.eval()
+def evaluate(models, dataloaders, return_losses=False, return_preds=False):
+    """Evaluates the given models on the provided dataloaders using an ensemble prediction method."""
+    # Set models to evaluation mode
+    for model, _, _, _ in models:
+        model.eval()
+    
     outs, ys = [], []
     lens = []
     token_masks = []
-    for batch in tqdm(dataloader, desc='Evaluation'):
-        x = batch['input_ids'] # 1 value, as we have batches of 1 doc.
-        y = batch['labels']
-        mask = batch['mask']
-        if args.task == 'seq':
-            ids = batch['ids']
+    all_logits = []
+    
 
-        with torch.no_grad():
-            logits = model.generate(x, mask)
-        
-        outs.append(logits)
-        lens.extend([x.shape[0] for x in logits])
-        ys.append(y)
+    for i, (model, crit, _, _) in enumerate(models):
+        dataloader = dataloaders[i]
+        for batch in tqdm(dataloader, desc=f'Evaluating model {i}'):
+            x = batch['input_ids']  # input
+            y = batch['labels']  # target labels
+            mask = batch['mask']  # mask
+            if args.task == 'seq':
+                ids = batch['ids']
+            
+            with torch.no_grad():
+                # Collect logits from the current model
+                logits = model.generate(x, mask)  # Assumes same model interface
+                all_logits.append(logits)
 
-        if 'token_mask' in batch:
-            token_masks.append(batch['token_mask'])
+            if 'token_mask' in batch:
+                token_masks.append(batch['token_mask'])
 
-    # lenghts of ys is 44, as we have 44 documents in the test set.
+    # Collect the true labels (ys) for only 1 dataloader
+    ys.append(y.view(-1))
+
+    # Average the logits across all models (ensemble prediction)
+    avg_logits = torch.mean(torch.stack(all_logits), dim=0)
+    outs.append(avg_logits)
+    lens.extend([x.shape[0] for x in avg_logits])
+
+    # Handle different label encoding types
     if args.label_encoding == 'multiclass':
         outs_stack = torch.cat([x.view(-1, args.num_labels) for x in outs], 0)
-        # ys_stack = torch.cat([x.view(-1) for x in ys], 0).to(device)
-        ys_stack = torch.cat([x.view(-1) for x in ys], 0).squeeze(0).to(device)
+        ys_stack = ys[0].to(device)
 
         preds = [x.squeeze() for x in outs]
-        # len(ys_stack): 153675 len(preds): 44
 
         if args.use_crf:
             padded_outs = torch.nn.utils.rnn.pad_sequence(preds, batch_first=True)
-            outs_mask = ~(padded_outs[:,:,0] == 0)
+            outs_mask = ~(padded_outs[:, :, 0] == 0)
             preds = crit.decode(padded_outs, mask=outs_mask)
             preds_stack = torch.tensor([x for pred in preds for x in pred]).to(device)
             padded_ys = torch.nn.utils.rnn.pad_sequence([x.squeeze() for x in ys], batch_first=True)
             loss = -1 * crit(padded_outs, padded_ys, mask=outs_mask, reduction='mean')
 
         else:
-            preds =  [x.argmax(-1) for x in preds]
+            preds = [x.argmax(-1) for x in preds]
             preds_stack = outs_stack.argmax(-1)
             loss = crit(outs_stack, ys_stack)
     else:
         outs_stack = torch.cat(outs, 1)
         ys_stack = torch.cat(ys, 1).to(device)
+        
         loss = crit(outs_stack, ys_stack)
-    
-    # Ground Truth Label Distribution: Counter({18: 61646, 13: 26442, 5: 25822, 9: 17517, 11: 6443, 1: 6335, 17: 3444, 
-    # 4: 2297, 8: 1257, 12: 777, 10: 714, 3: 296, 0: 259, 16: 158, 7: 130, 15: 81, 2: 31, 6: 15, 14: 11})
 
     losses = []
     offset = 0
     if return_losses:
         for ln in lens:
-            sub_losses = loss[offset:offset+ln]
+            sub_losses = loss[offset:offset + ln]
             offset += ln
             losses.append(sub_losses.mean().item())
         return losses
 
-
     loss = loss.mean()
 
-    y = torch.cat(ys, 1).squeeze()
+    # Concatenate predictions and ground truth for metric calculation
+    y = torch.cat(ys, 0).squeeze() # along the batch dimension
 
-    if len(token_masks) > 0:
-        token_masks = torch.cat(token_masks, 1).squeeze().to(torch.int32).to(device)
+    if len(token_masks) > 0:   
+        token_masks = [tm.to(device) for tm in token_masks]  # Move to device first
+        
+        # Ensure token_masks are consistently shaped before stacking
+        if token_masks[0].dim() == 1:  
+            token_masks = [tm.unsqueeze(0) for tm in token_masks]  # Ensure they are at least 2D
+
+        token_masks = torch.cat(token_masks, dim=0)  # Stack properly
+
+        # Now calculate accuracy using token_masks to mask padded tokens
         acc = ((ys_stack == preds_stack).float() * token_masks).sum() / token_masks.sum() * 100
     else:
+        # If no token_mask, use a simple accuracy calculation
         acc = (ys_stack == preds_stack).float().mean() * 100
+
 
     if 'all_spans' in dataloader.dataset.data[0]:
         all_spans = [x['all_spans'] for x in dataloader.dataset.data]
         span_ys = [(i, s['label'], s['token_start'], s['token_end']) for i, spans in enumerate(all_spans) for s in spans[0]]
     else:
         span_ys = None
-      
-    print('Calculating metrics...')
+
     f1, span_preds, span_ys, perclass = calc_metrics_spans(ys, preds, span_ys)
+
     if return_preds:
         return span_preds, span_ys
+
     metrics_out = {}
     metrics_out['f1'] = f1
     metrics_out['acc'] = acc
-    model.train()
 
-    # genders = dataloader.dataset.stats['gender']
-    # for g in set(genders):
-    #     ids = [i for i,x in enumerate(genders) if x==g]
-    #     sub_ys = torch.cat([x for i,x in enumerate(ys) if i in ids], 1).squeeze().cpu()
-    #     sub_preds = torch.cat([x for i,x in enumerate(preds) if i in ids]).cpu()
-    #     sub_acc = (sub_ys == sub_preds).float().mean() * 100
-    #     print(g, sub_acc)
-
-    # ethnicities = dataloader.dataset.stats['ethnicity']
-    # for e in set(ethnicities):
-    #     ids = [i for i,x in enumerate(ethnicities) if x==e]
-    #     sub_ys = torch.cat([x for i,x in enumerate(ys) if i in ids], 1).squeeze().cpu()
-    #     sub_preds = torch.cat([x for i,x in enumerate(preds) if i in ids]).cpu()
-    #     sub_acc = (sub_ys == sub_preds).float().mean() * 100
-    #     print(e, sub_acc)
-
-    # langs = dataloader.dataset.stats['language']
-    # for l in set(langs):
-    #     ids = [i for i,x in enumerate(langs) if x==l]
-    #     sub_ys = torch.cat([x for i,x in enumerate(ys) if i in ids], 1).squeeze().cpu()
-    #     sub_preds = torch.cat([x for i,x in enumerate(preds) if i in ids]).cpu()
-    #     sub_acc = (sub_ys == sub_preds).float().mean() * 100
-    #     print(l, sub_acc)
+    # Set models back to training mode
+    for model, _, _, _ in models:
+        model.train()
 
     if args.task == 'token':
         pheno_results = {}
         for pheno, ids in dataloader.dataset.pheno_ids.items():
-            sub_ys = [x for i,x in enumerate(ys) if i in ids]
-            sub_preds = [x for i,x in enumerate(preds) if i in ids]
+            sub_ys = [x for i, x in enumerate(ys) if i in ids]
+            sub_preds = [x for i, x in enumerate(preds) if i in ids]
             f1, span_preds, span_ys, _ = calc_metrics_spans(sub_ys, sub_preds)
             pheno_results[pheno] = f1
     else:
         pheno_results = None
+
     return metrics_out, pheno_results, loss, perclass
 
 def process(sample, model, tokenizer, out_dir):
@@ -406,26 +386,13 @@ def predict_mimic(model, data, tokenizer):
     # for sample in tqdm(data):
     #     process(sample)
 
-def train(args, model, crit, optimizer, lr_scheduler, train_dataloader, val_dataloader, 
-          verbose=True, train_ns=None, test_dataloader=None):
+def train(args, models, train_dataloaders, val_dataloaders, 
+          verbose=True, train_nss=None, test_dataloaders=None):
     """
-    Train the model with the given parameters.
-    Args:
-        args (Namespace): Arguments containing training configurations.
-        model (torch.nn.Module): The model to be trained.
-        crit (torch.nn.Module): The loss function.
-        optimizer (torch.optim.Optimizer): The optimizer for training.
-        lr_scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler.
-        train_dataloader (DataLoader): DataLoader for the training data.
-        val_dataloader (DataLoader): DataLoader for the validation data.
-        verbose (bool, optional): If True, prints training progress. Defaults to True.
-        train_ns (optional): Additional training namespace. Defaults to None.
-        test_dataloader (DataLoader, optional): DataLoader for the test data. Defaults to None.
-    Returns:
-        tuple: Best F1 score, best accuracy, and the step at which the best F1 score was achieved.
+    Train function for stacked models, each with its own dataloader.
     """
     writer = aim.Run(experiment=args.aim_exp, repo=args.aim_repo, 
-            system_tracking_interval=0) if not args.debug else None
+                     system_tracking_interval=0) if not args.debug else None
     if writer is not None:
         writer['hparams'] = args.__dict__
 
@@ -435,85 +402,105 @@ def train(args, model, crit, optimizer, lr_scheduler, train_dataloader, val_data
     best_step = 0
     best_pheno = None
     best_perclass = None
-    train_iter = iter(train_dataloader)
+
+    # Create iterators for each training dataloader
+    train_iters = [iter(dl) for dl in train_dataloaders]
     losses = []
+
     while step < args.total_steps:
-        batch = next(train_iter, None)
-        if batch is None:
-            train_iter = iter(train_dataloader)
-            continue
-        x = batch['input_ids']
-        y = batch['labels']
-        mask = batch['mask']
+        # Fetch batches separately for each model
+        batches = [next(train_iter, None) for train_iter in train_iters]
 
-        y = y.to(device)
-        if args.task == 'seq':
-            out, _ = model.phenos(x, mask)
-            logits = out[1]
-        elif args.task == 'token':
-            out, logits = model.decisions(x, mask)
+        # If any batch is None, reset that dataloader's iterator
+        for i, batch in enumerate(batches):
+            if batch is None:
+                train_iters[i] = iter(train_dataloaders[i])
+                batches[i] = next(train_iters[i])
 
+        logits_list = []
+
+        for i, (model, crit, _, _) in enumerate(models):
+            model.train()
+            model.to(device)
+
+            batch = batches[i]  # Each model gets its corresponding batch
+            x = batch['input_ids']
+            y = batch['labels'].to(device)
+            mask = batch['mask']
+
+            if args.task == 'seq':
+                out, _ = model.phenos(x, mask)
+                logits = out[1]
+                
+            elif args.task == 'token':
+                out, logits = model.decisions(x, mask)
+
+            logits_list.append(logits)
+
+        # Compute the average logits across all models
+        avg_logits = torch.mean(torch.stack(logits_list), dim=0)
+
+        # Compute loss
         if args.label_encoding == 'multiclass':
             if args.use_crf:
-                loss = -1 * crit(logits, y, reduction='mean')
+                loss = -1 * crit(avg_logits, y, reduction='mean')  
             else:
-                loss = crit(logits.view(-1, args.num_labels), y.view(-1)).mean()
+                loss = crit(avg_logits.view(-1, args.num_labels), y.view(-1)).mean()
         else:
-            loss = crit(logits, y).mean()
+            loss = crit(avg_logits, y).mean()
+
         total_loss = loss
-
-
         losses.append(loss.item())
-        total_loss /= args.grad_accumulation
-        total_loss.backward(retain_graph=True)
-        
-        if (step+1) % args.grad_accumulation == 0:
-            optimizer.step()
-            optimizer.zero_grad()
-            lr_scheduler.step()
 
-        if step % (args.train_log*args.grad_accumulation) == 0:
+        total_loss /= args.grad_accumulation
+        total_loss.backward(retain_graph=False)
+
+        if (step + 1) % args.grad_accumulation == 0:
+            for _, _, optimizer, lr_scheduler in models:
+                optimizer.step()
+                optimizer.zero_grad()
+                lr_scheduler.step()
+
+        if step % (args.train_log * args.grad_accumulation) == 0:
             avg_loss = np.mean(losses)
             if verbose:
-                print('step %d - training loss: %.3f'%(step, avg_loss))
+                print(f"Step {step} - Training Loss: {avg_loss:.3f}")
             if writer is not None:
-                writer.track(avg_loss, name='bce_loss', context={'split': 'train'}, step = step)
+                writer.track(avg_loss, name='bce_loss', context={'split': 'train'}, step=step)
             losses = []
 
-        if len(val_dataloader) > 0 and step % (args.val_log*args.grad_accumulation) == 0:
+        if len(val_dataloaders) > 0 and step % (args.val_log * args.grad_accumulation) == 0:
             if args.save_losses:
-                save_losses(model, crit, train_ns, val_dataloader, test_dataloader)
-            metrics_out, pheno_results, loss, perclass = evaluate(model, val_dataloader, crit)
+                for model, crit, _, _ in models:
+                    save_losses(model, crit, train_nss, val_dataloaders, test_dataloaders)
+            metrics_out, pheno_results, loss, perclass = evaluate(models, val_dataloaders)
             f1, acc = metrics_out['f1'], metrics_out['acc']
             if verbose:
-                print('[step: {:5d}] f1: {:.1f}, acc: {:.1f}, loss: {:.3f}'
-                        .format(step, f1, acc, loss))
+                print(f"[Step {step}] F1: {f1:.1f}, Acc: {acc:.1f}, Loss: {loss:.3f}")
             if writer is not None:
-                writer.track(loss, name='bce_loss', context={'split': 'val'}, step = step)
-                writer.track(f1, name='f1', step = step)
-                # writer.track(prec, name='precision', step = step)
-                # writer.track(rec, name='recall', step = step)
+                writer.track(loss, name='bce_loss', context={'split': 'val'}, step=step)
+                writer.track(f1, name='f1', step=step)
             if f1 > best_f1:
                 best_f1 = f1
                 best_acc = acc
                 best_step = step
                 best_pheno = pheno_results
-                # best_perclass = metrics_out[4:6]
                 if not args.debug:
-                    torch.save(model.state_dict(), args.ckpt_dir)
+                    os.makedirs(os.path.dirname(args.ckpt_dir), exist_ok=True)  # Ensure parent directory exists
+                    for i, (model, _, _, _) in enumerate(models):
+                        torch.save(model.state_dict(), f"{args.ckpt_dir}_model_{i}.pt")
+        
         step += 1
+
     if writer is not None:
-        writer.track(best_f1, name = 'best_f1')
-        writer.track(best_step, name = 'best_step')
+        writer.track(best_f1, name='best_f1')
+        writer.track(best_step, name='best_step')
         if best_pheno is not None:
             for pheno, f1 in best_pheno.items():
                 writer.track(f1, name='best_f1', context={'group': pheno})
-        if args.task == 'token':
-            #f1s = best_perclass
-            #for i in range(len(f1s)):
-            #    writer.track(f1s[i], name='best_f1', context={'decision': i})
-            pass
+
     return best_f1, best_acc, best_step
+
 
 def main(args):
     """
@@ -530,59 +517,53 @@ def main(args):
     Returns:
         float: The mean F1 score across different seeds.
     """
-    # os.system("killall -9 Python")
     
     f1s = []
-    print('Starting main...')
+    print('========== Starting main ==========')
     for seed in args.seed:
-        print(f'---------------- Seed : {seed} ----------------')
         torch.manual_seed(seed)
         np.random.seed(seed)
         args.seed = seed
-        train_dataloader, val_dataloader, test_dataloader, train_ns = load_data(args)
-        model, crit, optimizer, lr_scheduler = load_model(args, device)
+        train_dataloaders, val_dataloaders, test_dataloaders, train_nss = load_data(args)
+
+        # Add stacked modeling definition here
+        models = []
+        if args.stacked != None:
+            for m in args.stacked:
+                args.model_name = m
+                model, crit, optimizer, lr_scheduler = load_model(args, device)
+                models.append((model, crit, optimizer, lr_scheduler))
+        else:
+            model, crit, optimizer, lr_scheduler = load_model(args, device)
+            models.append((model, crit, optimizer, lr_scheduler))
 
         if not args.eval_only:
-            print('Training...')
-            f1, acc, step = train(args, model, crit, 
-                    optimizer, lr_scheduler, train_dataloader,
-                    val_dataloader, args.verbose, train_ns, test_dataloader)
+            print('\n------ Training ------')
+            f1, acc, step = train(args, models, train_dataloaders,
+                    val_dataloaders, args.verbose, train_nss, test_dataloaders)
             f1s.append(f1)
-            print('seed: %d, F1: %.1f, Acc: %.1f'%(seed, f1, acc))
+            print(f'[Train] f1: {f1:.1f}, acc: {acc:.1f}')
 
-            print('Testing...')
-            metrics_out, pheno_results, loss, perclass = evaluate(model, test_dataloader, crit)
+            print('\n------ Testing ------')
+            metrics_out, pheno_results, loss, perclass = evaluate(models, test_dataloaders)
+
             f1, acc = metrics_out['f1'], metrics_out['acc']
-            print('[Test] f1: {:.1f}, acc: {:.1f}, loss: {:.3f}'
-                    .format(f1, acc, loss))
-            # print(pheno_results)
+            print('[Test] f1: {:.1f}, acc: {:.1f}, loss: {:.3f}'.format(f1, acc, loss))
             print(perclass)
 
         else:
-            print('Testing...')
+            print('\n------ Testing ------')
             model.eval()
-            # Train
-            # metrics_out, pheno_results, loss = evaluate(model, train_ns, crit)
-            # f1, acc = metrics_out['f1'], metrics_out['acc']
-            # print('[Train] f1: {:.1f}, acc: {:.1f}, loss: {:.3f}'
-            #         .format(f1, acc, loss))
-
-            # Val
-            # metrics_out, pheno_results, loss, perclass = evaluate(model, val_dataloader, crit)
-            # f1, acc = metrics_out['f1'], metrics_out['acc']
-            # print('[Val] f1: {:.1f}, acc: {:.1f}, loss: {:.3f}'
-            #         .format(f1, acc, loss))
 
             # Test
-            metrics_out, pheno_results, loss, perclass = evaluate(model, test_dataloader, crit)
+            metrics_out, pheno_results, loss, perclass = evaluate(models, test_dataloaders)
             f1, acc = metrics_out['f1'], metrics_out['acc']
             print('[Test] f1: {:.1f}, acc: {:.1f}, loss: {:.3f}'.format(f1, acc, loss))
             # print(pheno_results)
             print(perclass)
 
-            # predict_mimic(model, data, tokenizer)
-        if args.save_losses:
-            np.savez('losses_%d.npz'%seed, train=all_losses['train'], val=all_losses['val'], test=all_losses['test'])
+        #if args.save_losses:
+        #    np.savez('losses_%d.npz'%seed, train=all_losses['train'], val=all_losses['val'], test=all_losses['test'])
     return np.mean(f1s)
 
 if __name__ == '__main__':
@@ -590,6 +571,7 @@ if __name__ == '__main__':
 
 # Train:
     # python main.py --data_dir data_dir/ --label_encoding multiclass --model_name nlpie/distil-biobert --total_steps 500 --lr 4e-5
+    # python main.py --data_dir data_dir/ --label_encoding multiclass --stacked nlpie/distil-biobert answerdotai/ModernBERT-base --total_steps 500 --lr 4e-5
 
 # Eval:
     # python main.py --data_dir data_dir --label_encoding multiclass --model_name answerdotai/ModernBERT-base --eval_only
