@@ -31,7 +31,6 @@ Follow these steps to set up your environment:
     pip install -r requirements.txt
     ```
 
----
 
 ## Download Data 📥
 
@@ -45,7 +44,7 @@ To get started, you need to download the necessary datasets:
 3. **Discharge Summaries: NOTEEVENTS.csv**: Available [here](https://physionet.org/content/mimiciii/1.4/).
 You must sign a data usage agreement before accessing the dataset.
 
----
+
 
 
 ## Repository Structure 📂
@@ -68,7 +67,7 @@ Your repository should have the following structure:
 └── preprocess_phenos.py            # Script for preprocessing phenotype annotations
 ```
 
----
+
 
 ## Preprocess Data 🔄
 
@@ -98,7 +97,7 @@ python preprocess_phenotypes.py <phenotypes_path (ACTdb102003.csv)>
 
 The aggregated annotations will be saved in `phenos.csv` in the same directory as the input file.
 
----
+
 
 ## Run Models ⚙️
 
@@ -123,7 +122,7 @@ To evaluate the baseline models, run this command:
 python main.py --data_dir <data_dir> --eval_only --ckpt ./checkpoints/[datetime]-[model_name]
 ```
 
----
+
 
 ## Arguments 📝
 
@@ -143,17 +142,14 @@ Here’s an overview of the available command-line arguments:
 - **batch_size**: The batch size.
 - **seed**: The random seed.
 
----
 
 With these steps and arguments, you should be able to quickly set up, preprocess the data, and run the models! 🎉
-
-Here's your enhanced and formatted README with added callouts, emojis, and code snippets:
 
 ---
 
 # Code Explanation 🧑‍💻
 
----
+
 
 ## `options.py` 📝
 
@@ -222,7 +218,7 @@ This file is responsible for defining and parsing command-line arguments for con
   - `num_labels = num_decs (9 by default)`.
   - Adjusts `num_labels` based on `label_encoding` (`multiclass`, `bo`, `boe`).
 
----
+
 
 ## `extract_texts.py` 📜
 
@@ -249,7 +245,7 @@ This means:
 - The CSV file containing notes is `"data_dir/NOTEEVENTS.csv"`.
 - The extracted texts will be stored in `"data_dir/raw_text/"`.
 
----
+
 
 ## `preprocess_phenos.py` 🔄
 
@@ -264,7 +260,7 @@ This script processes phenotype annotations from a dataset, handling multiple an
 ### **2. Relationship to Other Files**
 - **Links to `extract_texts.py`**: `extract_texts.py` generates `raw_text/*.txt` files from clinical notes. `preprocess_phenos.py` processes phenotype annotations, creating `phenos.csv`, which pairs with these text files.
 
----
+
 
 ## `data.py` 📊
 
@@ -297,7 +293,7 @@ This file, `data.py`, is responsible for handling data loading and processing fo
 - Loads and tokenizes text data using a Hugging Face tokenizer.
 - Stores tokenized input IDs, phenotype labels, and token masks.
 
----
+
 
 ## `model.py` 🏗️
 
@@ -322,7 +318,7 @@ Its main objectives include:
 - Works with `train.py` and `evaluate.py` for training and testing the model.
 - Uses `args.model_name` to dynamically select the backbone, likely corresponding to a pre-configured transformer model used in MedDec.
 
----
+
 
 ## `main.py` 🚀
 
