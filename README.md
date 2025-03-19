@@ -3,12 +3,24 @@
 
 ![MedDec](assets/figure.png)
 
-This is the code and dataset described in **[MedDec (Elgaar et al., Findings of ACL: ACL 2024)](https://aclanthology.org/2024.findings-acl.975/)**.
+> [!TIP ]This repository is a **contribution** to the code described in **[MedDec (Elgaar et al., Findings of ACL: ACL 2024)](https://aclanthology.org/2024.findings-acl.975/)**.
 
 MedDec is the first dataset specifically developed for extracting and classifying medical decisions from clinical notes. It includes 451 expert-annotated annotated discharge summaries from the MIMIC-III dataset, offering a valuable resource for understanding and facilitating clinical decision-making.
 
+
 ---
 
+
+# Contribution to MedDec
+
+This repository implemented the possibility to do ensemble modeling. 
+The user now had the possibility to select multiple models at once to have a new stacked model making the predictions. 
+The user can add the flag --stacked <model_1> <model_2> <model_n> to do ensemble modeling. 
+
+#TODO : quick analysis of the results obtained through our own experiments (more detailed analysis in the report)
+#TODO : quick explanation of why we chose this ensemble method and what does that bring to the analysis (more detailed explanation in the report)
+
+---
 
 
 # Quickstart 🚀
@@ -111,7 +123,13 @@ The code expects the following directories and files:
 To train the baseline models, use the following command:
 
 ```bash
-python main.py --data_dir <data_dir> --label_encoding multiclass --model_name google/electra-base-discriminator --total_steps 5000 --lr 4e-5
+python main.py --data_dir data_dir/ --label_encoding multiclass --model_name google/electra-base-discriminator --total_steps 2001 --lr 4e-5
+```
+
+To train using ensemble modeling, use the following command:
+
+```bash
+python main.py --data_dir data_dir/ --label_encoding multiclass --stacked nlpie/distil-biobert answerdotai/ModernBERT-base --total_steps 2001 --lr 4e-5
 ```
 
 ### Evaluate the Baselines 📊
