@@ -3,7 +3,8 @@
 
 ![MedDec](assets/figure.png)
 
-> [!TIP ]This repository is a **contribution** to the code described in **[MedDec (Elgaar et al., Findings of ACL: ACL 2024)](https://aclanthology.org/2024.findings-acl.975/)**.
+> [!TIP]
+> This repository is a **contribution** to the code described in **[MedDec (Elgaar et al., Findings of ACL: ACL 2024)](https://aclanthology.org/2024.findings-acl.975/)**.
 
 MedDec is the first dataset specifically developed for extracting and classifying medical decisions from clinical notes. It includes 451 expert-annotated annotated discharge summaries from the MIMIC-III dataset, offering a valuable resource for understanding and facilitating clinical decision-making.
 
