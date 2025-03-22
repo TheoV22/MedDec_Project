@@ -12,14 +12,21 @@ MedDec is the first dataset specifically developed for extracting and classifyin
 ---
 
 
-# Contribution to MedDec
+# Contributions to MedDec 📝
 
-This repository implemented the possibility to do ensemble modeling. 
+1. Testing of RoBERTa and Binder models and analysis of their results.
+2. Testing of new models, such as ModernBERT and Distill-BioBERT.
+3. Implementation of ensemble modeling. 
+
 The user now had the possibility to select multiple models at once to have a new stacked model making the predictions. 
-The user can add the flag --stacked <model_1> <model_2> <model_n> to do ensemble modeling. 
+The user can do ensemble modeling by adding the flag:
+  ```bash
+   --stacked <model_1> <model_2> <model_n> 
+  ```
+Final analysis:
+We confirm good performances of RoBERTa, especially for F1 score, but detected the potential of ModernBERT to surpass it, as it aleady has better accuracy score. 
+Esemble modelling has high potentia l as well for better stability and generalization, but needs further implementation improvements to be a real asset. 
 
-#TODO : quick analysis of the results obtained through our own experiments (more detailed analysis in the report)
-#TODO : quick explanation of why we chose this ensemble method and what does that bring to the analysis (more detailed explanation in the report)
 
 ---
 
