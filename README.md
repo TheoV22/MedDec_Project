@@ -341,7 +341,7 @@ Its main objectives include:
 - **Checkpoint Loading**: If a pre-trained MedDec model is available, `load_model()` allows resuming training or running inference on new data.
 
 #### **Links to Other Files**:
-- Works with `train.py` and `evaluate.py` for training and testing the model.
+- Works with `train()` and `evaluate()` for training and testing the model.
 - Uses `args.model_name` to dynamically select the backbone, likely corresponding to a pre-configured transformer model used in MedDec.
 
 
